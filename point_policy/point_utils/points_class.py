@@ -29,7 +29,7 @@ class PointsClass:
         dift_steps,
         num_points,
         object_labels,
-        use_gt_depth=True,
+        use_gt_depth=False, # changed default to False
         **kwargs,
     ):
         """
