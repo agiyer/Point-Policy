@@ -117,18 +117,13 @@ for TASK_NAME in task_names:
     DATASET_PATH = Path(f"{PROCESSED_DATA_PATH}/{TASK_NAME}")
 
     if (SAVE_DATA_PATH / f"{TASK_NAME}.pkl").exists():
-        print(f"Data for {TASK_NAME} already exists. Appending to it...")
+        print(f"Data for {TASK_NAME} already exists. Overwriting it...")
         input("Press Enter to continue...")
         data = pkl.load(open(SAVE_DATA_PATH / f"{TASK_NAME}.pkl", "rb"))
-        observations = data["observations"]
-        max_cartesian = data["max_cartesian"]
-        min_cartesian = data["min_cartesian"]
-        max_gripper = data["max_gripper"]
-        min_gripper = data["min_gripper"]
-    else:
-        observations = []
-        max_cartesian, min_cartesian = None, None
-        max_gripper, min_gripper = None, None
+        
+    observations = []
+    max_cartesian, min_cartesian = None, None
+    max_gripper, min_gripper = None, None
 
     dirs = [x for x in DATASET_PATH.iterdir() if x.is_dir()]
     for i, data_point in enumerate(sorted(dirs)):
@@ -420,7 +415,7 @@ for TASK_NAME in task_names:
             max_gripper = np.maximum(max_gripper, np.max(gripper_states))
             min_gripper = np.minimum(min_gripper, np.min(gripper_states))
 
-        if not use_gt_depth:
+        if process_points and not use_gt_depth:
             """
             Triangulate 3D points from 2D points when gt_depth is not available
             """
