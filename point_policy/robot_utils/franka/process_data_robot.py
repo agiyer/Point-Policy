@@ -38,8 +38,8 @@ SAVE_PATH = Path(DATA_DIR) / "processed_data"
 
 cam_indices = {
     1: "rgb",
-    2: "rgb",
-    51: "rgb",
+    2: "rgb"
+    #51: "rgb",
 }
 states_file_name = "states"
 cmd_states_file_name = "commanded_states"
