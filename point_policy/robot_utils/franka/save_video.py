@@ -4,14 +4,14 @@ import imageio
 from pathlib import Path
 import cv2
 
-DATA_DIR = Path("/path/to/expert_demos")
-TASK_NAME = "close_oven"
+DATA_DIR = Path("/home/akash/Projects/data/expert_demos/franka_env")
+TASK_NAME = "bowl"
 plot_pts = True
 
 DATA_PATH = DATA_DIR / f"{TASK_NAME}.pkl"
 SAVE_DIR = Path(f"./videos/{TASK_NAME}")
 pixel_keys = ["pixels1", "pixels2"]
-original_image_size = (640, 480)
+original_image_size = (256,256)
 k = 1  # number of track points to plot per frame
 traj_indices = None
 
@@ -56,6 +56,7 @@ for traj_idx in traj_indices:
         save_frames = []
         for i, frame in enumerate(frames):
             frame = frame[..., [2, 1, 0]].copy()
+            #breakpoint()
             if plot_pts and pixel_key != "pixels51":
                 for j, points in enumerate(point_tracks[max(0, i - k) : i + 1]):
                     # points = points[3:4]
