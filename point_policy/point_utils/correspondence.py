@@ -62,7 +62,7 @@ class Correspondence:
         self.dift_steps = dift_steps
 
     # Get the feature map from the DIFT model for the expert image to compare with the first frame of each episode later on
-    def set_expert_correspondence(self, expert_image, pixel_key, object_label=""):
+    def set_expert_correspondence(self, expert_image):
         with torch.no_grad():
             # Use a null prompt
             self.prompt = ""
@@ -90,7 +90,7 @@ class Correspondence:
         return expert_img_features
 
     def find_correspondence(
-        self, expert_img_features, current_image, coords, pixel_key, object_label
+        self, expert_img_features, current_image, coords
     ):
         """
         Find the corresponding points between the expert image and the current image

@@ -51,9 +51,7 @@ camera_indices = [1, 2]
 original_img_size = (640, 480)
 crop_h, crop_w = (0.0, 1.0), (0.0, 1.0)
 save_img_size = (256, 256)
-object_labels = [
-    "objects",
-]
+
 
 PROCESSED_DATA_PATH = Path(DATA_DIR) / "processed_data"
 SAVE_DATA_PATH = Path(DATA_DIR) / "expert_demos" / "franka_env"
@@ -91,7 +89,6 @@ if process_points:
         cfg["pixel_keys"] = [
             camera2pixelkey[f"cam_{cam_idx}"] for cam_idx in camera_indices
         ]
-        cfg["object_labels"] = object_labels
 
     points_class = PointsClass(**cfg)
 
@@ -285,8 +282,7 @@ for TASK_NAME in task_names:
                 # CV2 reads in BGR format, so we need to convert to RGB
                 frames = [frame[..., ::-1] for frame in frames]
                 points_class.add_to_image_list(frames[0], pixel_key)
-                for object_label in object_labels:
-                    points_class.find_semantic_similar_points(pixel_key, object_label)
+                points_class.find_semantic_similar_points(pixel_key)
                 try:
                     points_class.track_points(
                         pixel_key, last_n_frames=mark_every, is_first_step=True

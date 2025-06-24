@@ -11,6 +11,41 @@ import matplotlib.patches as patches
 from point_utils.correspondence import Correspondence
 from point_utils.depth import Depth
 
+from pathlib import Path
+import json
+from pydantic import BaseModel, ValidationError
+from typing import List, Dict
+
+# ---------- To validate the json annotationfile ----------
+class Point(BaseModel):
+    x: int
+    y: int
+
+class BoundingBox(BaseModel):
+    xmin: int
+    ymin: int
+    xmax: int
+    ymax: int
+
+class ObjectAnnotation(BaseModel):
+    points: List[Point]
+    bounding_box: BoundingBox
+
+class PixelKeyData(BaseModel):
+    image_path: str
+    objects: Dict[str, ObjectAnnotation]
+
+class AnnotationData(BaseModel):
+    task_name: str
+    pixel_keys: Dict[str, PixelKeyData]
+# ------------------------------------------------------------
+
+# ---------- To validate the vlm request ----------
+class TaskRequest(BaseModel):
+    task_name: str
+    pixel_key: str
+    objects: Dict[str, BoundingBox]
+# ------------------------------------------------------------
 
 class PointsClass:
     def __init__(
@@ -27,8 +62,8 @@ class PointsClass:
         ensemble_size,
         dift_layer,
         dift_steps,
-        num_points,
-        object_labels,
+        num_points, # NOTE: never used but kept for backward compatibility
+        vlm_request_path = None,
         use_gt_depth=False, # changed default to False
         **kwargs,
     ):
@@ -64,30 +99,36 @@ class PointsClass:
         dift_steps : int
             The number of steps or iterations for feature extraction in the DIFT model.
         """
+        self.vlm_request = None
+        if vlm_request_path is not None:
+            with open(vlm_request_path, 'r') as f:
+                request_json = json.load(f)
+                self.vlm_request = TaskRequest(**request_json)
 
         self.pixel_keys = pixel_keys
         self.device = device
-        self.object_labels = object_labels
 
         self.tracks = {pixel_key: None for pixel_key in self.pixel_keys}
-        if "human_hand" in self.object_labels:
-            # Do hand tracking with MediaPipe
-            import mediapipe as mp
+        
+        # if "human_hand" in self.object_labels:
+        #     # Do hand tracking with MediaPipe
+        #     import mediapipe as mp
 
-            # Initialize MediaPipe Hands
-            mp_hands = mp.solutions.hands
-            self.hands = mp_hands.Hands(
-                static_image_mode=True, max_num_hands=1, min_detection_confidence=0.5
-            )
-            self.hand_tracks = {pixel_key: None for pixel_key in self.pixel_keys}
+        #     # Initialize MediaPipe Hands
+        #     mp_hands = mp.solutions.hands
+        #     self.hands = mp_hands.Hands(
+        #         static_image_mode=True, max_num_hands=1, min_detection_confidence=0.5
+        #     )
+        #     self.hand_tracks = {pixel_key: None for pixel_key in self.pixel_keys}
 
-            # remove "human_hand" from object_labels
-            self.object_labels.remove("human_hand")
-            self.detect_hand = True
-            self.num_hand_points = 9  # wrist + index finger + thumb
-        else:
-            self.detect_hand = False
+        #     # remove "human_hand" from object_labels
+        #     self.object_labels.remove("human_hand")
+        #     self.detect_hand = True
+        #     self.num_hand_points = 9  # wrist + index finger + thumb
+        # else:
+        #     self.detect_hand = False
 
+        
         # Set up the correspondence model and find the expert image features
         self.correspondence_model = Correspondence(
             device,
@@ -100,30 +141,70 @@ class PointsClass:
             dift_steps,
         )
 
-        self.initial_coords, self.expert_correspondence_features = {}, {}
-        for pixel_key in self.pixel_keys:
-            expert_image = Image.open(
-                "%s/coordinates/%s/images/%s.png" % (root_dir, task_name, pixel_key)
-            ).convert("RGB")
+        json_path = Path(root_dir) / 'coordinates' / task_name / 'annotations.json'
+        
+        with open(json_path, 'r') as f:
+            raw_data = json.load(f)
 
-            if len(self.object_labels) > 0:
-                for object_label in self.object_labels:
-                    key = f"{pixel_key}_{object_label}"
-                    self.initial_coords[key] = np.array(
-                        pickle.load(
-                            open(
-                                "%s/coordinates/%s/coords/%s_%s.pkl"
-                                % (root_dir, task_name, pixel_key, object_label),
-                                "rb",
-                            )
-                        )
-                    )
-                    with torch.no_grad():
-                        self.expert_correspondence_features[
-                            key
-                        ] = self.correspondence_model.set_expert_correspondence(
-                            expert_image, pixel_key, object_label
-                        )
+        try:
+            self.annotations = AnnotationData.model_validate(raw_data)
+        except ValidationError as e:
+            print(f"Validation error: {e}")
+            raise
+
+        self.all_initial_coords = {}  # initial coords for entire img per pixel_key
+        self.all_dift_features = {} # dift features for entire img per pixel_key
+        
+        for pixel_key in self.pixel_keys:
+
+            expert_image = self.annotations.pixel_keys[pixel_key].image_path
+            expert_image = Image.open(expert_image).convert("RGB")
+
+            # Get DIFT features for the entire image
+            self.all_dift_features[pixel_key] = self.correspondence_model.set_expert_correspondence(expert_image)
+            
+            all_points = []
+            for obj_annotation in self.annotations.pixel_keys[pixel_key].objects.values():
+                for point in obj_annotation.points:
+                    all_points.append([0, point.x, point.y])   # NOTE: 0 is for backward compatibility with old code
+            
+            self.all_initial_coords[pixel_key] = np.array(all_points)
+            self.num_points = len(all_points)
+
+        # get dift features and points per object
+        if self.vlm_request is not None:
+
+            self.object_initial_coords = {} # initial coords per object per pixel_key
+            self.object_dift_features = {} # dift features per object per pixel_key
+
+            for pixel_key in self.pixel_keys:
+                # Initialize nested dictionaries for each pixel_key
+                self.object_initial_coords[pixel_key] = {}
+                self.object_dift_features[pixel_key] = {}
+
+                expert_image = self.annotations.pixel_keys[pixel_key].image_path
+                expert_image = Image.open(expert_image).convert("RGB")
+                
+                for object_name, obj_annotation in self.annotations.pixel_keys[pixel_key].objects.items():
+
+                    # Get DIFT features for each object by cropping based on bbox
+                    bbox = obj_annotation.bounding_box
+                    # Crop the image based on bounding box
+                    cropped_img = expert_image.crop((bbox.xmin, bbox.ymin, bbox.xmax, bbox.ymax))
+                    
+                    # Pass cropped image through correspondence model
+                    self.object_dift_features[pixel_key][object_name] = self.correspondence_model.set_expert_correspondence(cropped_img)
+                    
+                    # Store object-specific initial coordinates (relative to cropped image)
+                    object_points = []
+                    for point in obj_annotation.points:
+
+                        # Convert global coordinates to local coordinates relative to bbox
+                        local_x = point.x - bbox.xmin
+                        local_y = point.y - bbox.ymin
+                        object_points.append([0, local_x, local_y])  # NOTE: 0 is for backward compatibility with old code
+                    
+                    self.object_initial_coords[pixel_key][object_name] = np.array(object_points)
 
         # Set up the depth model
         if use_gt_depth:
@@ -150,20 +231,12 @@ class PointsClass:
             f"{pixel_key}": torch.tensor([]).to(self.device)
             for pixel_key in self.pixel_keys
         }
-        self.semantic_similar_points = {
-            f"{pixel_key}_{object_label}": None
-            for pixel_key in self.pixel_keys
-            for object_label in self.object_labels
-        }
 
-        if num_points == -1:
-            self.num_points = 0 if not self.detect_hand else self.num_hand_points
-            if len(self.object_labels) > 0:
-                for object_label in self.object_labels:
-                    key = f"{self.pixel_keys[0]}_{object_label}"
-                    self.num_points += self.initial_coords[key].shape[0]
-        else:
-            self.num_points = num_points
+        # TODO: find out what this is for (in case we have to replicate per object)
+        self.all_semantic_similar_points = {
+            f"{pixel_key}": None
+            for pixel_key in self.pixel_keys
+        }
 
         self.device = device
 
@@ -220,24 +293,62 @@ class PointsClass:
         self.tracks = {pixel_key: None for pixel_key in self.pixel_keys}
         self.hand_tracks = {pixel_key: None for pixel_key in self.pixel_keys}
 
-    def find_semantic_similar_points(self, pixel_key, object_label=""):
+    def find_semantic_similar_points(self, pixel_key):
         """
         Find the semantic similar points between the expert image and the current image.
         """
+        # if vlm request path is not provided, use the entire image to find sem similar points
+        if self.vlm_request is None:
 
-        if object_label == "human_hand":
-            return
+            self.all_semantic_similar_points[pixel_key] = self.correspondence_model.find_correspondence(
+                self.all_dift_features[pixel_key],
+                self.image_list[pixel_key][0, -1],
+                self.all_initial_coords[pixel_key],
+            )
 
-        key = f"{pixel_key}_{object_label}"
-        self.semantic_similar_points[
-            key
-        ] = self.correspondence_model.find_correspondence(
-            self.expert_correspondence_features[key],
-            self.image_list[pixel_key][0, -1],
-            self.initial_coords[key],
-            pixel_key,
-            object_label,
-        )
+        # otherwise, find sem similar points for each object and then map back to the entire image
+        else : 
+
+            pixel_key = self.vlm_request.pixel_key
+
+            if pixel_key not in self.pixel_keys:
+                raise ValueError(f"Pixel key {self.vlm_request.pixel_key} not found in {self.pixel_keys}")
+
+            # instead of finding sem similar points for the entire image, 
+            # we need to find sem similar points for each object and then map back to the entire image
+            # this should then be stored in self.all_semantic_similar_points[pixel_key]
+            
+            sem_similar_points = []
+
+            for object_name, bbox in self.vlm_request.objects.items():                      
+
+                if object_name in self.object_initial_coords[pixel_key]:
+
+                    # TODO: replace image_list[0,-1] with the image the vlm saw
+                    cropped_img = self.image_list[pixel_key][0, -1].crop((bbox.xmin, bbox.ymin, bbox.xmax, bbox.ymax))
+
+                    obj_similar_points = self.correspondence_model.find_correspondence(
+                        self.object_dift_features[pixel_key][object_name],
+                        cropped_img,
+                        self.object_initial_coords[pixel_key][object_name],
+                    )
+
+                    # Map coordinates back to the full image by adding bbox offset
+                    obj_similar_points[:, 1] += bbox.xmin
+                    obj_similar_points[:, 2] += bbox.ymin
+
+                    sem_similar_points.append(obj_similar_points)
+    
+                else:
+                    print(f'WARNING: object {object_name} not found in {self.annotations.pixel_keys[pixel_key].objects.keys()}. Skipping...')
+
+            # Combine all object coordinates into a single numpy array
+            if sem_similar_points:
+                self.all_semantic_similar_points[pixel_key] = np.concatenate(sem_similar_points, axis=0)
+            else:
+                # If no objects found, create empty array with correct shape
+                self.all_semantic_similar_points[pixel_key] = np.array([]).reshape(0, 3)
+
 
     def get_depth(self, pixel_key, last_n_frames=1):
         """
@@ -332,42 +443,39 @@ class PointsClass:
                         dim=1,
                     )
 
-        if len(self.object_labels) > 0:
-            if is_first_step:
-                semantic_similar_points = []
-                for object_label in self.object_labels:
-                    semantic_similar_points.append(
-                        self.semantic_similar_points[f"{pixel_key}_{object_label}"]
-                    )
-                semantic_similar_points = torch.cat(semantic_similar_points, dim=0)
+        if is_first_step:
+            semantic_similar_points = []
+            semantic_similar_points.append(
+                self.all_semantic_similar_points[pixel_key]
+            )
+            semantic_similar_points = torch.cat(semantic_similar_points, dim=0)
 
-                self.cotracker[pixel_key](
-                    video_chunk=self.image_list[pixel_key][0, 0]
-                    .unsqueeze(0)
-                    .unsqueeze(0),
-                    is_first_step=True,
-                    add_support_grid=True,
-                    queries=semantic_similar_points[None].to(self.device),
-                )
-                self.tracks[pixel_key] = semantic_similar_points
-            else:
-                tracks, _ = self.cotracker[pixel_key](
-                    self.image_list[pixel_key], one_frame=one_frame
-                )
-                # Remove the support points
-                tracks = tracks[:, :, 0 : self.num_points, :]
-
-                if self.detect_hand:
-                    self.hand_tracks[pixel_key] = self.hand_tracks[pixel_key].to(
-                        tracks.device
-                    )
-                    self.tracks[pixel_key] = torch.cat(
-                        [self.hand_tracks[pixel_key], tracks], dim=-2
-                    )
-                else:
-                    self.tracks[pixel_key] = tracks.clone()
+            self.cotracker[pixel_key](
+                video_chunk=self.image_list[pixel_key][0, 0]
+                .unsqueeze(0)
+                .unsqueeze(0),
+                is_first_step=True,
+                add_support_grid=True,
+                queries=semantic_similar_points[None].to(self.device),
+            )
+            self.tracks[pixel_key] = semantic_similar_points
         else:
-            self.tracks[pixel_key] = self.hand_tracks[pixel_key]
+            tracks, _ = self.cotracker[pixel_key](
+                self.image_list[pixel_key], one_frame=one_frame
+            )
+            # Remove the support points
+            tracks = tracks[:, :, 0 : self.num_points, :]
+
+            if self.detect_hand:
+                self.hand_tracks[pixel_key] = self.hand_tracks[pixel_key].to(
+                    tracks.device
+                )
+                self.tracks[pixel_key] = torch.cat(
+                    [self.hand_tracks[pixel_key], tracks], dim=-2
+                )
+            else:
+                self.tracks[pixel_key] = tracks.clone()
+
 
     def track_points_hand(self, pixel_key):
         frames = (

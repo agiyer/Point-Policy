@@ -35,7 +35,6 @@ class RGBArrayAsObservationWrapper(dm_env.Environment):
         self,
         env,
         task_name,
-        object_labels,
         calib_path,
         width=256,
         height=256,
@@ -53,7 +52,6 @@ class RGBArrayAsObservationWrapper(dm_env.Environment):
     ):
         self._env = env
         self._task_name = task_name
-        self._object_labels = object_labels
         self._height, self._width = height, width
         self.use_robot = use_robot
         self._max_episode_len = max_episode_len
@@ -75,7 +73,7 @@ class RGBArrayAsObservationWrapper(dm_env.Environment):
 
             points_cfg["task_name"] = task_name
             points_cfg["pixel_keys"] = self._pixel_keys
-            points_cfg["object_labels"] = object_labels
+            # points_cfg["object_labels"] = object_labels
             self._points_class = PointsClass(**points_cfg)
 
         # calibration data
@@ -369,10 +367,7 @@ class RGBArrayAsObservationWrapper(dm_env.Environment):
                 frame = obs[pixel_key]
                 self._points_class.reset_episode()
                 self._points_class.add_to_image_list(frame[:, :, ::-1], pixel_key)
-                for object_label in self._object_labels:
-                    self._points_class.find_semantic_similar_points(
-                        pixel_key, object_label
-                    )
+                self._points_class.find_semantic_similar_points(pixel_key)
                 self._points_class.track_points(pixel_key, is_first_step=True)
                 self._points_class.track_points(pixel_key)
                 object_pts = self._points_class.get_points_on_image(pixel_key)
@@ -605,7 +600,6 @@ class ExtendedTimeStepWrapper(dm_env.Environment):
 
 def make(
     task_name,
-    object_labels,
     action_repeat,
     height,
     width,
@@ -634,7 +628,6 @@ def make(
     env = RGBArrayAsObservationWrapper(
         env,
         task_name,
-        object_labels,
         calib_path=calib_path,
         height=height,
         width=width,

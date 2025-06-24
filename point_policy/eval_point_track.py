@@ -78,6 +78,9 @@ class Workspace:
                     points_cfg[
                         "cotracker_checkpoint"
                     ] = f"{root_dir}/{cotracker_checkpoint}"
+
+                points_cfg["vlm_request_path"] = self.cfg.vlm_request_path
+                    
                 self.cfg.suite.task_make_fn.points_cfg = points_cfg
         except:
             pass
